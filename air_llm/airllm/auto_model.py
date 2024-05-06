@@ -24,19 +24,7 @@ class AutoModel:
         else:
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
 
-        if "QWen" in config.architectures[0]:
-            return "airllm", "AirLLMQWen"
-        elif "Baichuan" in config.architectures[0]:
-            return "airllm", "AirLLMBaichuan"
-        elif "ChatGLM" in config.architectures[0]:
-            return "airllm", "AirLLMChatGLM"
-        elif "InternLM" in config.architectures[0]:
-            return "airllm", "AirLLMInternLM"
-        elif "Mistral" in config.architectures[0]:
-            return "airllm", "AirLLMMistral"
-        elif "Mixtral" in config.architectures[0]:
-            return "airllm", "AirLLMMixtral"
-        elif "Llama" in config.architectures[0]:
+        if "Llama" in config.architectures[0]:
             return "airllm", "AirLLMLlama2"
         else:
             print(f"unknown artichitecture: {config.architectures[0]}, try to use Llama2...")

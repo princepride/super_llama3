@@ -1,7 +1,3 @@
-
-
-
-
 class LayeredProfiler:
     def __init__(self):
         self.profiling_time_dict = {}

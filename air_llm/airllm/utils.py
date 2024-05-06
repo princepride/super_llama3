@@ -257,8 +257,6 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
     n_shards = len(set(index.values()))
     state_dict = {}
 
-
-
     if not os.path.exists(saving_path):
         #os.makedirs(saving_path)
         saving_path.mkdir(parents=True, exist_ok=True)
@@ -357,7 +355,7 @@ def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards
     # it should be a repo id at this point...
     hf_cache_path = huggingface_hub.snapshot_download(model_local_path_or_repo_id, token=hf_token,
         #allow_patterns= ["model.safetensors.index.json", 'pytorch_model.bin.index.json'],
-        ignore_patterns=['*.safetensors', '*.bin'])
+        ignore_patterns=['*.safetensors', '*.bin', 'original/*'])
 
 
     # check if there's safetensors saved, if so, exclude torch saves
