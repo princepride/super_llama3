@@ -54,7 +54,7 @@ class SuperLLMBaseModel(GenerationMixin):
 
     def __init__(self, model_local_path_or_repo_id, device="cuda:0", dtype=torch.float16, max_seq_len=512,
                  layer_shards_saving_path=None, profiling_mode=False, compression=None,
-                 hf_token=None, prefetching=True, delete_original=True):
+                 hf_token=None, prefetching=True, delete_original=True, split_model_size=8):
         """
         Sharded version of LlamaForCausalLM : the model is splitted into layer shards to reduce GPU memory usage.
         During the forward pass, the inputs are processed layer by layer, and the GPU memory is freed after each layer.
@@ -106,7 +106,8 @@ class SuperLLMBaseModel(GenerationMixin):
                                                                                          compression=compression,
                                                                                          layer_names=self.layer_names_dict,
                                                                                          hf_token=hf_token,
-                                                                                         delete_original=delete_original)
+                                                                                         delete_original=delete_original,
+                                                                                         split_model_size=split_model_size)
         self.running_device = device
         self.device = torch.device(self.running_device)
         self.running_dtype = dtype
@@ -414,27 +415,20 @@ class SuperLLMBaseModel(GenerationMixin):
 
             # Load first layer
             if self.prefetching:
-                #with torch.cuda.stream(self.stream):
-                #state_dict = self.load_layer_to_cpu(self.layer_names[0])
                 future = executor.submit(self.load_layer_to_cpu, self.layer_names[0])
 
-
-            for i, (layer_name, layer) in tqdm(enumerate(zip(self.layer_names, self.layers)),
-                                               desc=f'running layers(self.running_device)',
-                                               total=len(self.layers)):
+            for i, layer_name in tqdm(enumerate(self.layer_names),
+                                    desc=f'running layers(self.running_device)',
+                                    total=len(self.layer_names)):
 
                 if self.prefetching:
                     if self.profiling_mode:
                         t = time.time()
                     # Load current layer and prepare next layer
                     state_dict = future.result()
-                    #torch.cuda.current_stream().wait_stream(self.stream)
                     if self.profiling_mode:
                         elapsed_time = time.time() - t
                         self.profiler.add_profiling_time('load_safe_tensor_cpu_wait', elapsed_time)
-
-                    #for param_name, param in state_dict.items():
-                    #    state_dict[param_name] = param.to('cuda', non_blocking=True)
 
                     if self.profiling_mode:
                         t = time.time()
@@ -444,15 +438,10 @@ class SuperLLMBaseModel(GenerationMixin):
                         self.profiler.add_profiling_time('create_layer_from_state_dict', elapsed_time)
 
                     # kick off next layer loading
-
                     if (i + 1) < len(self.layer_names):
-                        #with torch.cuda.stream(self.stream):
-                        #state_dict = self.load_layer_to_cpu(self.layer_names[i + 1])
                         if self.profiling_mode:
                             t = time.time()
                         future = executor.submit(self.load_layer_to_cpu, self.layer_names[i+1])
-                        #for param_name, param in state_dict.items():
-                        #    state_dict[param_name] = param.to('cuda', non_blocking=True)
 
                         if self.profiling_mode:
                             elapsed_time = time.time() - t
@@ -468,94 +457,84 @@ class SuperLLMBaseModel(GenerationMixin):
                         self.profiler.add_profiling_time('create_layer_from_safe_tensor', elapsed_time)
 
                 # Run layer
-
-                for j, seq in enumerate(batch):
-
-                    if layer_name == self.layer_names_dict['embed']:
+                if layer_name == self.layer_names_dict['embed']:
+                    layer = self.layers[0]
+                    for j, seq in enumerate(batch):
                         batch[j] = layer(seq)
-                    elif layer_name == self.layer_names_dict['norm']:
-                        #batch[j] = layer(seq[torch.arange(n_seq), batch_eos[j]][:, None])
+
+                elif layer_name == self.layer_names_dict['norm']:
+                    layer = self.layers[-2]
+                    for j, seq in enumerate(batch):
                         batch[j] = self.run_norm(layer, seq)
-
                         if output_attentions:
-                            all_hidden_states[i].append(batch[j])
-                    elif layer_name == self.layer_names_dict['lm_head']:
+                            all_hidden_states[-2].append(batch[j])
+
+                elif layer_name == self.layer_names_dict['lm_head']:
+                    layer = self.layers[-1]
+                    for j, seq in enumerate(batch):
                         batch[j] = self.run_lm_head(layer, seq)
-                    else:
 
-                        if output_attentions:
-                            all_hidden_states[i].append(new_seq)
-
-                        if past_key_values is not None:
-                            # join past kv
-                            k_cache, v_cache = past_key_values[i - 1]
-                            len_p = self.get_past_key_values_cache_seq_len(past_key_values)
-                            len_s = self.get_sequence_len(seq)
-
-                            position_ids_args = self.get_position_ids_args(position_ids, len_p, len_s)
-                            attention_mask_args = self.get_attention_mask_args(attention_mask, len_p, len_s)
-                            past_key_value_args = self.get_past_key_value_args(k_cache, v_cache)
-
-                            kwargs = {'use_cache':True,
-                                      }
-
-                            pos_embed_args = self.get_pos_emb_args(len_p, len_s)
-                            kwargs = {**kwargs, **past_key_value_args, **pos_embed_args, **attention_mask_args,
-                                      **position_ids_args}
-
-
-                            layer_outputs = layer(seq,
-                                                  **kwargs
-                                                  )
-                            new_seq = layer_outputs[0]
+                else:
+                    start, end = map(int, layer_name.split('.')[-1].split('-'))
+                    for j, seq in enumerate(batch):
+                        for k in range(start, end):
+                            layer = self.layers[k]
 
                             if output_attentions:
-                                all_self_attns[i].append(layer_outputs[1])
+                                all_hidden_states[k].append(new_seq)
 
-                            if use_cache:
-                                (k_cache, v_cache) = layer_outputs[2 if output_attentions else 1]
-                                kv_cache_list[i][0].append(k_cache)
-                                kv_cache_list[i][1].append(v_cache)
+                            if past_key_values is not None:
+                                # join past kv
+                                k_cache, v_cache = past_key_values[k - 1]
+                                len_p = self.get_past_key_values_cache_seq_len(past_key_values)
+                                len_s = self.get_sequence_len(seq)
 
+                                position_ids_args = self.get_position_ids_args(position_ids, len_p, len_s)
+                                attention_mask_args = self.get_attention_mask_args(attention_mask, len_p, len_s)
+                                past_key_value_args = self.get_past_key_value_args(k_cache, v_cache)
 
-                        else:
-                            len_seq = self.get_sequence_len(seq)
+                                kwargs = {'use_cache': True}
 
+                                pos_embed_args = self.get_pos_emb_args(len_p, len_s)
+                                kwargs = {**kwargs, **past_key_value_args, **pos_embed_args, **attention_mask_args,
+                                        **position_ids_args}
 
+                                layer_outputs = layer(seq, **kwargs)
+                                new_seq = layer_outputs[0]
 
-                            pos_embed_args = self.get_pos_emb_args(0, len_seq)
-                            attention_mask_args = self.get_attention_mask_args(attention_mask, 0, len_seq)
-                            position_ids_args = self.get_position_ids_args(position_ids, 0, len_seq)
+                                if output_attentions:
+                                    all_self_attns[k].append(layer_outputs[1])
 
+                                if use_cache:
+                                    (k_cache, v_cache) = layer_outputs[2 if output_attentions else 1]
+                                    kv_cache_list[k][0].append(k_cache)
+                                    kv_cache_list[k][1].append(v_cache)
 
-
-
-                            if not use_cache:
-
-                                kwargs = {'use_cache': False,
-                                          'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:],
-                                          }
-                                kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
-
-
-                                new_seq = layer(seq, **kwargs)[0]
                             else:
+                                len_seq = self.get_sequence_len(seq)
 
-                                kwargs = {'use_cache': True,
-                                          'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:],
-                                          }
-                                kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
+                                pos_embed_args = self.get_pos_emb_args(0, len_seq)
+                                attention_mask_args = self.get_attention_mask_args(attention_mask, 0, len_seq)
+                                position_ids_args = self.get_position_ids_args(position_ids, 0, len_seq)
 
-                                layer_out = layer(seq, **kwargs)
+                                if not use_cache:
+                                    kwargs = {'use_cache': False,
+                                            'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
+                                    kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
 
-                                # TODO: adopt Cache mechanism in 4.36
-                                new_seq, (k_cache, v_cache) = layer_out
-                                kv_cache_list[i][0].append(k_cache)
-                                kv_cache_list[i][1].append(v_cache)
+                                    new_seq = layer(seq, **kwargs)[0]
+                                else:
+                                    kwargs = {'use_cache': True,
+                                            'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
+                                    kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
 
-                                # print(f"k_cache sizes: {[len(x[1]) for x in kv_cache_list]}")
+                                    layer_out = layer(seq, **kwargs)
 
-                        batch[j] = new_seq
+                                    new_seq, (k_cache, v_cache) = layer_out
+                                    kv_cache_list[k][0].append(k_cache)
+                                    kv_cache_list[k][1].append(v_cache)
+
+                            batch[j] = new_seq
 
                 if output_hidden_states:
                     all_hidden_states += (torch.cat(batch, 0),)
@@ -568,9 +547,7 @@ class SuperLLMBaseModel(GenerationMixin):
         if use_cache:
             kv_cache_list = kv_cache_list[1:-2]
             for i in range(len(kv_cache_list)):
-                # print(f"{i} - {kv_cache_list[i][0].shape}")
                 kv_cache_list[i] = (torch.cat(kv_cache_list[i][0], 0), torch.cat(kv_cache_list[i][1], 0))
-            #print(f"returning kvcache size: {kv_cache_list[0][0].shape}")
 
         if output_attentions:
             all_self_attns = all_self_attns[0:-2]
@@ -584,20 +561,18 @@ class SuperLLMBaseModel(GenerationMixin):
 
         if not return_dict:
             return tuple(v for v in [logits,
-                                     tuple(kv_cache_list) if kv_cache_list is not None else None,
-                                     tuple(all_hidden_states) if all_hidden_states is not None else None,
-                                     tuple(all_self_attns) if all_self_attns is not None else None] if v is not None)
+                                    tuple(kv_cache_list) if kv_cache_list is not None else None,
+                                    tuple(all_hidden_states) if all_hidden_states is not None else None,
+                                    tuple(all_self_attns) if all_self_attns is not None else None] if v is not None)
         if self.profiling_mode:
             forward_elapsed_time = time.process_time() - forward_start
             forward_elapsed_time_wall = time.time() - forward_start_wall
             self.profiler.print_profiling_time()
 
-
             print(f"total infer process time(including all above plus gpu compute): {forward_elapsed_time:.04f}")
             print(f"total infer wall time(including all above plus gpu compute): {forward_elapsed_time_wall:.04f}")
 
             self.profiler.clear_profiling_time()
-
 
         return CausalLMOutputWithPast(
             loss=None,

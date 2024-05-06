@@ -180,7 +180,8 @@ def remove_real_and_linked_file(to_delete):
 
 
 def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitted_model_dir_name='splitted_model',
-                          compression=None, layer_names=None, delete_original=True, repo_id=None, hf_token=None):
+                          compression=None, layer_names=None, delete_original=True, repo_id=None, hf_token=None,
+                          split_model_size=8):
     """
     Save the all layers of a model sharded checkpoint using safetensors.
     """
@@ -191,12 +192,10 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
 
     checkpoint_path = Path(checkpoint_path)
 
-
     saving_path = checkpoint_path / splitted_model_dir_name
 
     if layer_shards_saving_path is not None:
         saving_path = Path(layer_shards_saving_path) / splitted_model_dir_name
-
 
     safetensors_format = False
     if os.path.exists(checkpoint_path / 'pytorch_model.bin.index.json'):
@@ -213,46 +212,49 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
     else:
         n_layers = len(set([int(k[len(layer_names['layer_prefix']):].split('.')[1]) for k in index.keys() if layer_names['layer_prefix'] in k]))
 
-    if layer_names is None:
-        layers = ['model.embed_tokens.'] + [f'model.layers.{i}.' for i in range(n_layers)] + ['model.norm.', 'lm_head.']
-    else:
-        layers = [layer_names['embed']] + [f'{layer_names["layer_prefix"]}.{i}' for i in range(n_layers)] + [layer_names['norm'], layer_names['lm_head']]
+    n_splits = (n_layers + split_model_size - 1) // split_model_size
 
+    if layer_names is None:
+        layers = ['model.embed_tokens.']
+        for i in range(n_splits):
+            start = i * split_model_size
+            end = min((i + 1) * split_model_size, n_layers)
+            layers.append(f'model.layers.{start}-{end}.')
+        layers.extend(['model.norm.', 'lm_head.'])
+    else:
+        layers = [layer_names['embed']]
+        for i in range(n_splits):
+            start = i * split_model_size
+            end = min((i + 1) * split_model_size, n_layers)
+            layers.append(f'{layer_names["layer_prefix"]}.{start}-{end}')
+        layers.extend([layer_names['norm'], layer_names['lm_head']])
+        
         if 'rotary_pos_emb' in layer_names:
             layers = [layer_names['rotary_pos_emb']] + layers
         layers = [l + "." for l in layers]
 
-
     # check if splitting exists and all files are there
     found_layers = None
-    #print(f"checking exists: {saving_path}")
     if os.path.exists(saving_path):
-        # dir already exists, check if all layer files are there
-
         found_layers = {}
         for layer in layers:
             found_layers[layer] = ModelPersister.get_model_persister().model_persist_exist(layer, saving_path)
 
         print(f"found_layers:{found_layers}")
         if all(found_layers.values()):
-            # already downloaded, return saving path...
             print(f"saved layers already found in {saving_path}")
             return str(saving_path)
         else:
             print(f"some layer splits found, some are not, re-save all layers in case there's some corruptions.")
 
-
     if not delete_original:
         check_space(checkpoint_path, layer_shards_saving_path, compression, splitted_model_dir_name=splitted_model_dir_name)
-
-
 
     shard = 0
     n_shards = len(set(index.values()))
     state_dict = {}
 
     if not os.path.exists(saving_path):
-        #os.makedirs(saving_path)
         saving_path.mkdir(parents=True, exist_ok=True)
 
     for layer in tqdm(layers):
@@ -260,7 +262,6 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
         # Optionnally load next shard
         shards = [int(v.split('-')[1]) for k, v in index.items() if k.startswith(layer)]
         if max(shards) > shard:
-            # optinoally delete original file
             if delete_original and shard != 0:
                 if not safetensors_format:
                     to_delete = checkpoint_path / f'pytorch_model-000{shard:02d}-of-000{n_shards:02d}.bin'
@@ -277,7 +278,6 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
             else:
                 to_load = checkpoint_path / f'model-000{shard:02d}-of-000{n_shards:02d}.safetensors'
 
-            # check if to_load exist, if not downloaad it...
             if not os.path.exists(to_load):
                 assert repo_id is not None
                 huggingface_hub.snapshot_download(repo_id, allow_patterns=os.path.basename(to_load),
@@ -288,19 +288,21 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
             else:
                 state_dict.update(load_file(to_load, device='cpu'))
 
-
         # Get layer state dict
-        layer_state_dict = dict([(k, v) for k, v in state_dict.items() if k.startswith(layer)])
+        if layer.startswith(f'{layer_names["layer_prefix"]}.'):
+            start, end = map(int, layer[len(layer_names["layer_prefix"]) + 1:-1].split('-'))
+            layer_state_dict = {}
+            for i in range(start, end):
+                layer_key = f'{layer_names["layer_prefix"]}.{i}.'
+                layer_state_dict.update(dict([(k, v) for k, v in state_dict.items() if k.startswith(layer_key)]))
+        else:
+            layer_state_dict = dict([(k, v) for k, v in state_dict.items() if k.startswith(layer)])
 
         layer_state_dict = compress_layer_state_dict(layer_state_dict, compression)
-
-
-        # Save layer state dict as using safetensors
 
         marker_exists = ModelPersister.get_model_persister().model_persist_exist(layer, saving_path)
         if not marker_exists:
             ModelPersister.get_model_persister().persist_model(layer_state_dict, layer, saving_path)
-
 
         # Free memory
         for k in layer_state_dict.keys():
@@ -312,7 +314,7 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
     return str(saving_path)
 
 def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards_saving_path=None, compression=None,
-                                       layer_names=None, hf_token=None, delete_original=True):
+                                       layer_names=None, hf_token=None, delete_original=True, split_model_size=8):
     """
     find the model's local cache path, download the cache if not exists, then split and save the model.
 
@@ -341,7 +343,7 @@ def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards
            os.path.exists(Path(model_local_path_or_repo_id) / 'model.safetensors.index.json'):
             print(f"found index file...")
             return Path(model_local_path_or_repo_id), split_and_save_layers(model_local_path_or_repo_id, layer_shards_saving_path,
-                                                                            compression=compression, layer_names=layer_names, delete_original=delete_original)
+                                                                            compression=compression, layer_names=layer_names, delete_original=delete_original, split_model_size=split_model_size)
         else:
             print(
                 f"Found local directory in {model_local_path_or_repo_id}, but didn't find downloaded model. Try using {model_local_path_or_repo_id} as a HF repo...")
@@ -373,4 +375,4 @@ def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards
     # if splitted_model subdir exists under cache use it, otherwise split and save
     return Path(hf_cache_path), split_and_save_layers(hf_cache_path, layer_shards_saving_path,
                                                       compression=compression, layer_names=layer_names,
-                                                      delete_original=delete_original, repo_id=model_local_path_or_repo_id, hf_token=hf_token)
+                                                      delete_original=delete_original, repo_id=model_local_path_or_repo_id, hf_token=hf_token, split_model_size=split_model_size)
