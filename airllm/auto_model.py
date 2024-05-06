@@ -1,14 +1,5 @@
 import importlib
 from transformers import AutoConfig
-from sys import platform
-
-is_on_mac_os = False
-
-if platform == "darwin":
-    is_on_mac_os = True
-
-if is_on_mac_os:
-    from airllm import AirLLMLlamaMlx
 
 class AutoModel:
     def __init__(self):
@@ -32,9 +23,6 @@ class AutoModel:
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *inputs, **kwargs):
-
-        if is_on_mac_os:
-            return AirLLMLlamaMlx(pretrained_model_name_or_path, *inputs, ** kwargs)
 
         module, cls = AutoModel.get_module_class(pretrained_model_name_or_path, *inputs, **kwargs)
         module = importlib.import_module(module)

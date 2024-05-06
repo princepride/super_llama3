@@ -10,12 +10,6 @@ import time
 
 from collections import OrderedDict, defaultdict
 from typing import Dict, List, Optional, Tuple, Union
-from sys import platform
-
-is_on_mac_os = False
-
-if platform == "darwin":
-    is_on_mac_os = True
 
 
 import torch
@@ -318,7 +312,7 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
     return str(saving_path)
 
 def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards_saving_path=None, compression=None,
-                                       layer_names=None, hf_token=None, delete_original=False):
+                                       layer_names=None, hf_token=None, delete_original=True):
     """
     find the model's local cache path, download the cache if not exists, then split and save the model.
 

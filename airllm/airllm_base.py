@@ -54,7 +54,7 @@ class AirLLMBaseModel(GenerationMixin):
 
     def __init__(self, model_local_path_or_repo_id, device="cuda:0", dtype=torch.float16, max_seq_len=512,
                  layer_shards_saving_path=None, profiling_mode=False, compression=None,
-                 hf_token=None, prefetching=True, delete_original=False):
+                 hf_token=None, prefetching=True, delete_original=True):
         """
         Sharded version of LlamaForCausalLM : the model is splitted into layer shards to reduce GPU memory usage.
         During the forward pass, the inputs are processed layer by layer, and the GPU memory is freed after each layer.
