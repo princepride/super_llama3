@@ -186,7 +186,7 @@ def remove_real_and_linked_file(to_delete):
 
 
 def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitted_model_dir_name='splitted_model',
-                          compression=None, layer_names=None, delete_original=False, repo_id=None, hf_token=None):
+                          compression=None, layer_names=None, delete_original=True, repo_id=None, hf_token=None):
     """
     Save the all layers of a model sharded checkpoint using safetensors.
     """
