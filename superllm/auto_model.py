@@ -16,10 +16,10 @@ class AutoModel:
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
 
         if "Llama" in config.architectures[0]:
-            return "airllm", "AirLLMLlama2"
+            return "superllm", "SuperLLMLlama2"
         else:
             print(f"unknown artichitecture: {config.architectures[0]}, try to use Llama2...")
-            return "airllm", "AirLLMLlama2"
+            return "superllm", "SuperLLMLlama2"
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *inputs, **kwargs):

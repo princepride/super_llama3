@@ -41,7 +41,7 @@ except ImportError:
 
 
 
-class AirLLMBaseModel(GenerationMixin):
+class SuperLLMBaseModel(GenerationMixin):
 
     # customize layer names here
     def set_layer_names_dict(self):
