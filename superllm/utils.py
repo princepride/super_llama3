@@ -180,7 +180,7 @@ def remove_real_and_linked_file(to_delete):
 
 
 def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitted_model_dir_name='splitted_model',
-                          compression=None, layer_names=None, delete_original=True, repo_id=None, hf_token=None):
+                          compression=None, layer_names=None, delete_original=True, repo_id=None, hf_token=None, split_model_size = 8):
     """
     Save the all layers of a model sharded checkpoint using safetensors.
     """
@@ -214,13 +214,22 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
         n_layers = len(set([int(k[len(layer_names['layer_prefix']):].split('.')[1]) for k in index.keys() if layer_names['layer_prefix'] in k]))
 
     if layer_names is None:
-        layers = ['model.embed_tokens.'] + [f'model.layers.{i}.' for i in range(n_layers)] + ['model.norm.', 'lm_head.']
+        layers = ['model.embed_tokens.']
+        for i in range(0, n_layers, split_model_size):
+            start = i
+            end = min(i + split_model_size, n_layers)
+            layers.append(f'model.layers.{start}:{end}.')
+        layers.extend(['model.norm.', 'lm_head.'])
     else:
-        layers = [layer_names['embed']] + [f'{layer_names["layer_prefix"]}.{i}' for i in range(n_layers)] + [layer_names['norm'], layer_names['lm_head']]
+        layers = [layer_names['embed']]
+        for i in range(0, n_layers, split_model_size):
+            start = i
+            end = min(i + split_model_size, n_layers)
+            layers.append(f'{layer_names["layer_prefix"]}.{start}:{end}.')
+        layers.extend([layer_names['norm'], layer_names['lm_head']])
 
         if 'rotary_pos_emb' in layer_names:
             layers = [layer_names['rotary_pos_emb']] + layers
-        layers = [l + "." for l in layers]
 
 
     # check if splitting exists and all files are there
@@ -256,7 +265,6 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
         saving_path.mkdir(parents=True, exist_ok=True)
 
     for layer in tqdm(layers):
-
         # Optionnally load next shard
         shards = [int(v.split('-')[1]) for k, v in index.items() if k.startswith(layer)]
         if max(shards) > shard:
@@ -290,7 +298,14 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
 
 
         # Get layer state dict
-        layer_state_dict = dict([(k, v) for k, v in state_dict.items() if k.startswith(layer)])
+        if ':' in layer:
+            start, end = map(int, layer.split(':')[0].split('.')[-1]), int(layer.split(':')[1].split('.')[0])
+            layer_state_dict = {}
+            for i in range(start, end):
+                layer_key = f'model.layers.{i}.'
+                layer_state_dict.update(dict([(k, v) for k, v in state_dict.items() if k.startswith(layer_key)]))
+        else:
+            layer_state_dict = dict([(k, v) for k, v in state_dict.items() if k.startswith(layer)])
 
         layer_state_dict = compress_layer_state_dict(layer_state_dict, compression)
 
