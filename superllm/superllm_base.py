@@ -54,7 +54,7 @@ class SuperLLMBaseModel(GenerationMixin):
 
     def __init__(self, model_local_path_or_repo_id, device="cuda:0", dtype=torch.float16, max_seq_len=512,
                  layer_shards_saving_path=None, profiling_mode=False, compression=None,
-                 hf_token=None, prefetching=True, delete_original=True):
+                 hf_token=None, prefetching=True, delete_original=True, split_model_size = 8):
         """
         Sharded version of LlamaForCausalLM : the model is splitted into layer shards to reduce GPU memory usage.
         During the forward pass, the inputs are processed layer by layer, and the GPU memory is freed after each layer.
@@ -87,6 +87,7 @@ class SuperLLMBaseModel(GenerationMixin):
         self.total_disk_loading_time = None
         self.total_gpu_loading_time = None
         self.total_compression_overhead_time = None
+        self.split_model_size = split_model_size
 
         if compression is not None:
             if not bitsandbytes_installed:
@@ -133,9 +134,13 @@ class SuperLLMBaseModel(GenerationMixin):
 
         layers_count = len(model_attr)
 
+        layer_prefix_name = []
+        for i in range(0, layers_count, self.split_model_size):
+            start = i
+            end = min(i + split_model_size, layers_count)
+            layer_prefix_name.append(f'model.layers.{start}~{end}')
 
-        self.layer_names = [self.layer_names_dict['embed']] + [f'{self.layer_names_dict["layer_prefix"]}.{i}' for i in
-                                                               range(layers_count)] + \
+        self.layer_names = [self.layer_names_dict['embed']] + layer_prefix_name + \
                            [self.layer_names_dict['norm'], self.layer_names_dict['lm_head']]
 
         self.max_seq_len = max_seq_len
