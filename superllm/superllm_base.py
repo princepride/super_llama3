@@ -416,30 +416,23 @@ class SuperLLMBaseModel(GenerationMixin):
         all_self_attns = [] * len(self.layers) if output_attentions else None
 
         with torch.inference_mode(), ThreadPoolExecutor() as executor:
-
             # Load first layer
             if self.prefetching:
-                #with torch.cuda.stream(self.stream):
-                #state_dict = self.load_layer_to_cpu(self.layer_names[0])
                 future = executor.submit(self.load_layer_to_cpu, self.layer_names[0])
 
-
-            for i, (layer_name, layer) in tqdm(enumerate(zip(self.layer_names, self.layers)),
-                                               desc=f'running layers(self.running_device)',
-                                               total=len(self.layers)):
+            layer_idx = 0  # 添加一个计数器,用于跟踪当前的layer索引
+            for i, layer_name in tqdm(enumerate(self.layer_names),
+                                    desc=f'running layers(self.running_device)',
+                                    total=len(self.layer_names)):
 
                 if self.prefetching:
                     if self.profiling_mode:
                         t = time.time()
                     # Load current layer and prepare next layer
                     state_dict = future.result()
-                    #torch.cuda.current_stream().wait_stream(self.stream)
                     if self.profiling_mode:
                         elapsed_time = time.time() - t
                         self.profiler.add_profiling_time('load_safe_tensor_cpu_wait', elapsed_time)
-
-                    #for param_name, param in state_dict.items():
-                    #    state_dict[param_name] = param.to('cuda', non_blocking=True)
 
                     if self.profiling_mode:
                         t = time.time()
@@ -449,16 +442,10 @@ class SuperLLMBaseModel(GenerationMixin):
                         self.profiler.add_profiling_time('create_layer_from_state_dict', elapsed_time)
 
                     # kick off next layer loading
-
                     if (i + 1) < len(self.layer_names):
-                        #with torch.cuda.stream(self.stream):
-                        #state_dict = self.load_layer_to_cpu(self.layer_names[i + 1])
                         if self.profiling_mode:
                             t = time.time()
                         future = executor.submit(self.load_layer_to_cpu, self.layer_names[i+1])
-                        #for param_name, param in state_dict.items():
-                        #    state_dict[param_name] = param.to('cuda', non_blocking=True)
-
                         if self.profiling_mode:
                             elapsed_time = time.time() - t
                             self.profiler.add_profiling_time('kick_off_load_cpu', elapsed_time)
@@ -473,23 +460,26 @@ class SuperLLMBaseModel(GenerationMixin):
                         self.profiler.add_profiling_time('create_layer_from_safe_tensor', elapsed_time)
 
                 # Run layer
+                if layer_name.startswith(self.layer_names_dict['layer_prefix']):
+                    # 如果是layers层,取对应索引的layer
+                    layer = self.layers[layer_idx]
+                    layer_idx += 1
+                else:
+                    # 如果是embed、norm或lm_head层,直接取对应的layer
+                    layer = self.layers[i]
 
                 for j, seq in enumerate(batch):
-
                     if layer_name == self.layer_names_dict['embed']:
                         batch[j] = layer(seq)
                     elif layer_name == self.layer_names_dict['norm']:
-                        #batch[j] = layer(seq[torch.arange(n_seq), batch_eos[j]][:, None])
                         batch[j] = self.run_norm(layer, seq)
-
                         if output_attentions:
                             all_hidden_states[i].append(batch[j])
                     elif layer_name == self.layer_names_dict['lm_head']:
                         batch[j] = self.run_lm_head(layer, seq)
                     else:
-
                         if output_attentions:
-                            all_hidden_states[i].append(new_seq)
+                            all_hidden_states[i].append(seq)
 
                         if past_key_values is not None:
                             # join past kv
@@ -501,17 +491,13 @@ class SuperLLMBaseModel(GenerationMixin):
                             attention_mask_args = self.get_attention_mask_args(attention_mask, len_p, len_s)
                             past_key_value_args = self.get_past_key_value_args(k_cache, v_cache)
 
-                            kwargs = {'use_cache':True,
-                                      }
+                            kwargs = {'use_cache': True}
 
                             pos_embed_args = self.get_pos_emb_args(len_p, len_s)
                             kwargs = {**kwargs, **past_key_value_args, **pos_embed_args, **attention_mask_args,
-                                      **position_ids_args}
+                                    **position_ids_args}
 
-
-                            layer_outputs = layer(seq,
-                                                  **kwargs
-                                                  )
+                            layer_outputs = layer(seq, **kwargs)
                             new_seq = layer_outputs[0]
 
                             if output_attentions:
@@ -522,43 +508,29 @@ class SuperLLMBaseModel(GenerationMixin):
                                 kv_cache_list[i][0].append(k_cache)
                                 kv_cache_list[i][1].append(v_cache)
 
-
                         else:
                             len_seq = self.get_sequence_len(seq)
-
-
 
                             pos_embed_args = self.get_pos_emb_args(0, len_seq)
                             attention_mask_args = self.get_attention_mask_args(attention_mask, 0, len_seq)
                             position_ids_args = self.get_position_ids_args(position_ids, 0, len_seq)
 
-
-
-
                             if not use_cache:
-
                                 kwargs = {'use_cache': False,
-                                          'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:],
-                                          }
+                                        'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
                                 kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
-
 
                                 new_seq = layer(seq, **kwargs)[0]
                             else:
-
                                 kwargs = {'use_cache': True,
-                                          'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:],
-                                          }
+                                        'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
                                 kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
 
                                 layer_out = layer(seq, **kwargs)
 
-                                # TODO: adopt Cache mechanism in 4.36
                                 new_seq, (k_cache, v_cache) = layer_out
                                 kv_cache_list[i][0].append(k_cache)
                                 kv_cache_list[i][1].append(v_cache)
-
-                                # print(f"k_cache sizes: {[len(x[1]) for x in kv_cache_list]}")
 
                         batch[j] = new_seq
 
