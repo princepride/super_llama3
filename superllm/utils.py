@@ -170,13 +170,12 @@ def compress_layer_state_dict(layer_state_dict, compression=None):
     return compressed_layer_state_dict if compressed_layer_state_dict is not None else layer_state_dict
 
 def remove_real_and_linked_file(to_delete):
-    if (os.path.realpath(to_delete) != to_delete):
+    targetpath = None
+    if str(os.path.realpath(to_delete)) != str(to_delete):
         targetpath = os.path.realpath(to_delete)
-
     os.remove(to_delete)
-    if (targetpath):
-         os.remove(targetpath)
-
+    if targetpath:
+        os.remove(targetpath)
 
 
 def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitted_model_dir_name='splitted_model',
@@ -218,15 +217,15 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
         for i in range(0, n_layers, split_model_size):
             start = i
             end = min(i + split_model_size, n_layers)
-            layers.append(f'model.layers.{start}:{end}.')
+            layers.append(f'model.layers.{start}~{end}.')
         layers.extend(['model.norm.', 'lm_head.'])
     else:
-        layers = [layer_names['embed']]
+        layers = [layer_names['embed']+'.']
         for i in range(0, n_layers, split_model_size):
             start = i
             end = min(i + split_model_size, n_layers)
-            layers.append(f'{layer_names["layer_prefix"]}.{start}:{end}.')
-        layers.extend([layer_names['norm'], layer_names['lm_head']])
+            layers.append(f'{layer_names["layer_prefix"]}.{start}~{end}.')
+        layers.extend([layer_names['norm']+'.', layer_names['lm_head']+'.'])
 
         if 'rotary_pos_emb' in layer_names:
             layers = [layer_names['rotary_pos_emb']] + layers
@@ -265,8 +264,17 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
         saving_path.mkdir(parents=True, exist_ok=True)
 
     for layer in tqdm(layers):
+        def temp_layer(layer):
+            start, end = int(layer.split('~')[0].split('.')[-1]), int(layer.split('~')[1].split('.')[0])
+            return ['model.layers.'+str(index)+'.' for index in range(start, end)]
+        def is_startswith_in_list(k, layer_list):
+            for layer in layer_list:
+                if k.startswith(layer):
+                    return True
+            return False
+        layer_list = [layer] if layer in ['model.embed_tokens.', 'model.norm.', 'lm_head.'] else temp_layer(layer)
         # Optionnally load next shard
-        shards = [int(v.split('-')[1]) for k, v in index.items() if k.startswith(layer)]
+        shards = [int(v.split('-')[1]) for k, v in index.items() if is_startswith_in_list(k, layer_list)]
         if max(shards) > shard:
             # optinoally delete original file
             if delete_original and shard != 0:
@@ -274,7 +282,6 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
                     to_delete = checkpoint_path / f'pytorch_model-000{shard:02d}-of-000{n_shards:02d}.bin'
                 else:
                     to_delete = checkpoint_path / f'model-000{shard:02d}-of-000{n_shards:02d}.safetensors'
-
                 print(f"deleting original file: {to_delete}")
                 remove_real_and_linked_file(to_delete)
             shard += 1
@@ -298,8 +305,8 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
 
 
         # Get layer state dict
-        if ':' in layer:
-            start, end = map(int, layer.split(':')[0].split('.')[-1]), int(layer.split(':')[1].split('.')[0])
+        if '~' in layer:
+            start, end = int(layer.split('~')[0].split('.')[-1]), int(layer.split('~')[1].split('.')[0])
             layer_state_dict = {}
             for i in range(start, end):
                 layer_key = f'model.layers.{i}.'
