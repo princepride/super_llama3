@@ -5,6 +5,8 @@ from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from torch import nn
+
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, AutoModel, GenerationMixin, LlamaForCausalLM, GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -496,6 +498,9 @@ class SuperLLMBaseModel(GenerationMixin):
                             pos_embed_args = self.get_pos_emb_args(len_p, len_s)
                             kwargs = {**kwargs, **past_key_value_args, **pos_embed_args, **attention_mask_args,
                                     **position_ids_args}
+                            
+                            if isinstance(layer, nn.Embedding):
+                                kwargs.pop('use_cache', None)
 
                             layer_outputs = layer(seq, **kwargs)
                             new_seq = layer_outputs[0]
