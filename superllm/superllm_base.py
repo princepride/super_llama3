@@ -525,11 +525,17 @@ class SuperLLMBaseModel(GenerationMixin):
                                         'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
                                 kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
 
+                                if isinstance(layer, nn.Embedding):
+                                    kwargs.pop('use_cache', None)
+
                                 new_seq = layer(seq, **kwargs)[0]
                             else:
                                 kwargs = {'use_cache': True,
                                         'attention_mask': attention_mask[:, :, -len_seq:, -len_seq:]}
                                 kwargs = {**kwargs, **pos_embed_args, **attention_mask_args, **position_ids_args}
+
+                                if isinstance(layer, nn.Embedding):
+                                    kwargs.pop('use_cache', None)
 
                                 layer_out = layer(seq, **kwargs)
 
