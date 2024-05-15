@@ -109,7 +109,8 @@ class SuperLLMBaseModel(GenerationMixin):
                                                                                          compression=compression,
                                                                                          layer_names=self.layer_names_dict,
                                                                                          hf_token=hf_token,
-                                                                                         delete_original=delete_original)
+                                                                                         delete_original=delete_original,
+                                                                                         split_model_size=self.split_model_size)
         self.running_device = device
         self.device = torch.device(self.running_device)
         self.running_dtype = dtype

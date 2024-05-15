@@ -334,7 +334,7 @@ def split_and_save_layers(checkpoint_path, layer_shards_saving_path=None, splitt
     return str(saving_path)
 
 def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards_saving_path=None, compression=None,
-                                       layer_names=None, hf_token=None, delete_original=True):
+                                       layer_names=None, hf_token=None, delete_original=True, split_model_size=8):
     """
     find the model's local cache path, download the cache if not exists, then split and save the model.
 
@@ -363,7 +363,7 @@ def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards
            os.path.exists(Path(model_local_path_or_repo_id) / 'model.safetensors.index.json'):
             print(f"found index file...")
             return Path(model_local_path_or_repo_id), split_and_save_layers(model_local_path_or_repo_id, layer_shards_saving_path,
-                                                                            compression=compression, layer_names=layer_names, delete_original=delete_original)
+                                                                            compression=compression, layer_names=layer_names, delete_original=delete_original, split_model_size=split_model_size)
         else:
             print(
                 f"Found local directory in {model_local_path_or_repo_id}, but didn't find downloaded model. Try using {model_local_path_or_repo_id} as a HF repo...")
@@ -395,4 +395,4 @@ def find_or_create_local_splitted_path(model_local_path_or_repo_id, layer_shards
     # if splitted_model subdir exists under cache use it, otherwise split and save
     return Path(hf_cache_path), split_and_save_layers(hf_cache_path, layer_shards_saving_path,
                                                       compression=compression, layer_names=layer_names,
-                                                      delete_original=delete_original, repo_id=model_local_path_or_repo_id, hf_token=hf_token)
+                                                      delete_original=delete_original, repo_id=model_local_path_or_repo_id, hf_token=hf_token, split_model_size=split_model_size)
